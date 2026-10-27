@@ -1,0 +1,9 @@
+file_path,file_name,file_size_bytes,status,row_count,column_count,duplicate_rows,error
+data/raw/campaign_desc.csv,campaign_desc.csv,540,success,30,4,0,
+data/raw/campaign_table.csv,campaign_table.csv,95874,success,7208,3,0,
+data/raw/causal_data.csv,causal_data.csv,695858427,success,36786524,5,0,
+data/raw/coupon.csv,coupon.csv,2822804,success,124548,3,5164,
+data/raw/coupon_redempt.csv,coupon_redempt.csv,54108,success,2318,4,0,
+data/raw/hh_demographic.csv,hh_demographic.csv,43233,success,801,8,0,
+data/raw/product.csv,product.csv,6429896,success,92353,7,0,
+data/raw/transaction_data.csv,transaction_data.csv,141742346,success,2595732,12,0,

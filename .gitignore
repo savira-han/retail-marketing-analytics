@@ -1,0 +1,18 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
+database/*.duckdb
+
+# Raw datasets
+data/raw/
+data/source_archive/
+
+# Local analytical database
+database/*.duckdb
+database/*.duckdb.wal
+
+# Python environment and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local environment variables
+.env

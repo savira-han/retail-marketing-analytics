@@ -1,0 +1,10 @@
+relative_path,file_name,extension,size_bytes,size_readable,is_empty
+data/raw/.DS_Store,.DS_Store,(no extension),6148,6.00 KB,False
+data/raw/campaign_desc.csv,campaign_desc.csv,.csv,540,540.00 B,False
+data/raw/campaign_table.csv,campaign_table.csv,.csv,95874,93.63 KB,False
+data/raw/causal_data.csv,causal_data.csv,.csv,695858427,663.62 MB,False
+data/raw/coupon.csv,coupon.csv,.csv,2822804,2.69 MB,False
+data/raw/coupon_redempt.csv,coupon_redempt.csv,.csv,54108,52.84 KB,False
+data/raw/hh_demographic.csv,hh_demographic.csv,.csv,43233,42.22 KB,False
+data/raw/product.csv,product.csv,.csv,6429896,6.13 MB,False
+data/raw/transaction_data.csv,transaction_data.csv,.csv,141742346,135.18 MB,False
