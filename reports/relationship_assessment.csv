@@ -1,0 +1,12 @@
+child_dataset,parent_dataset,join_columns,distinct_child_keys,matched_keys,unmatched_keys,match_rate_pct
+transaction_data,hh_demographic,household_key,2500,801,1699,32.04
+transaction_data,product,PRODUCT_ID,92339,92339,0,100.0
+campaign_table,campaign_desc,CAMPAIGN,30,30,0,100.0
+campaign_table,transaction_data,household_key,1584,1584,0,100.0
+coupon,product,PRODUCT_ID,44133,44133,0,100.0
+coupon,campaign_desc,CAMPAIGN,30,30,0,100.0
+coupon_redempt,transaction_data,household_key,434,434,0,100.0
+coupon_redempt,campaign_desc,CAMPAIGN,30,30,0,100.0
+coupon_redempt,coupon,COUPON_UPC,556,556,0,100.0
+coupon_redempt,coupon,COUPON_UPC + CAMPAIGN,643,643,0,100.0
+causal_data,product,PRODUCT_ID,68377,68377,0,100.0

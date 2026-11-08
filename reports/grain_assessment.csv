@@ -1,0 +1,9 @@
+dataset,row_count,candidate_key,distinct_key_combinations,duplicate_key_groups,duplicate_key_rows,null_key_rows,unique_candidate_key
+transaction_data,2595732,household_key + BASKET_ID + PRODUCT_ID + TRANS_TIME,2595732,0,0,0,true
+hh_demographic,801,household_key,801,0,0,0,true
+product,92353,PRODUCT_ID,92353,0,0,0,true
+campaign_desc,30,CAMPAIGN,30,0,0,0,true
+campaign_table,7208,household_key + CAMPAIGN,7208,0,0,0,true
+coupon,124548,COUPON_UPC + PRODUCT_ID + CAMPAIGN,119384,1824,5164,0,false
+coupon_redempt,2318,household_key + DAY + COUPON_UPC + CAMPAIGN,2318,0,0,0,true
+causal_data,36786524,PRODUCT_ID + STORE_ID + WEEK_NO + display + mailer,36786524,0,0,0,true
