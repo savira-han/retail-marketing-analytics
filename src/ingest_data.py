@@ -5,11 +5,13 @@ import re
 import duckdb
 import pandas as pd
 
+
 # ==================================================
 # Configuration
 # ==================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 DATA_DIR = PROJECT_ROOT / "data" / "raw"
 DATABASE_DIR = PROJECT_ROOT / "database"
 DATABASE_PATH = DATABASE_DIR / "retail_marketing.duckdb"
@@ -19,269 +21,224 @@ SUMMARY_PATH = REPORT_DIR / "ingestion_summary.csv"
 COLUMN_REPORT_PATH = REPORT_DIR / "ingestion_columns.csv"
 
 CSV_ENCODING = "utf-8-sig"
-CSV_DELIMITER = ","
-
-# This uncommon marker prevents empty CSV fields from being interpreted
-# as NULL during source ingestion. The marker is checked before loading.
 NULL_SENTINEL = "__DUCKDB_INGEST_NULL_7F3A91__"
 
-# Configure these only after inspecting the real source schemas.
-# Keys are table names derived from relative CSV paths.
-#
-# Example format, NOT an assertion about the dataset:
-# TYPE_OVERRIDES = {
-#     "example_table": {
-#         "verified_date_column": "DATE",
-#         "verified_count_column": "BIGINT",
-#     }
-# }
-TYPE_OVERRIDES: dict[str, dict[str, str]] = {}
-
-ALLOWED_TYPES = {
-    "VARCHAR",
-    "BOOLEAN",
-    "TINYINT",
-    "SMALLINT",
-    "INTEGER",
-    "BIGINT",
-    "UTINYINT",
-    "USMALLINT",
-    "UINTEGER",
-    "UBIGINT",
-    "FLOAT",
-    "REAL",
-    "DOUBLE",
-    "DATE",
-    "TIMESTAMP",
-    "TIMESTAMP WITH TIME ZONE",
-    "DECIMAL",
-}
-
-# DECIMAL precision/scale must be specified, e.g. DECIMAL(12, 2).
-DECIMAL_PATTERN = re.compile(r"DECIMAL\(\d{1,2},\s*\d{1,2}\)", re.I)
 
 # ==================================================
-# Identifiers and file discovery
+# Expected Source Datasets
+# ==================================================
+
+# Expected values are based on Phase 2 inspection.
+# Changes in the source dataset must be reviewed
+# before updating this configuration.
+
+EXPECTED_DATASETS = {
+    "campaign_desc": {
+        "rows": 30,
+        "columns": [
+            "DESCRIPTION",
+            "CAMPAIGN",
+            "START_DAY",
+            "END_DAY",
+        ],
+    },
+
+    "campaign_table": {
+        "rows": 7208,
+        "columns": [
+            "DESCRIPTION",
+            "household_key",
+            "CAMPAIGN",
+        ],
+    },
+
+    "causal_data": {
+        "rows": 36786524,
+        "columns": [
+            "PRODUCT_ID",
+            "STORE_ID",
+            "WEEK_NO",
+            "display",
+            "mailer",
+        ],
+    },
+
+    "coupon": {
+        "rows": 124548,
+        "columns": [
+            "COUPON_UPC",
+            "PRODUCT_ID",
+            "CAMPAIGN",
+        ],
+    },
+
+    "coupon_redempt": {
+        "rows": 2318,
+        "columns": [
+            "household_key",
+            "DAY",
+            "COUPON_UPC",
+            "CAMPAIGN",
+        ],
+    },
+
+    "hh_demographic": {
+        "rows": 801,
+        "columns": [
+            "classification_1",
+            "classification_2",
+            "classification_3",
+            "HOMEOWNER_DESC",
+            "classification_5",
+            "classification_4",
+            "KID_CATEGORY_DESC",
+            "household_key",
+        ],
+    },
+
+    "product": {
+        "rows": 92353,
+        "columns": [
+            "PRODUCT_ID",
+            "MANUFACTURER",
+            "DEPARTMENT",
+            "BRAND",
+            "COMMODITY_DESC",
+            "SUB_COMMODITY_DESC",
+            "CURR_SIZE_OF_PRODUCT",
+        ],
+    },
+
+    "transaction_data": {
+        "rows": 2595732,
+        "columns": [
+            "household_key",
+            "BASKET_ID",
+            "DAY",
+            "PRODUCT_ID",
+            "QUANTITY",
+            "SALES_VALUE",
+            "STORE_ID",
+            "RETAIL_DISC",
+            "TRANS_TIME",
+            "WEEK_NO",
+            "COUPON_DISC",
+            "COUPON_MATCH_DISC",
+        ],
+    },
+}
+
+
+# ==================================================
+# SQL Helpers
 # ==================================================
 
 def quote_identifier(name: str) -> str:
-    """Safely quote a DuckDB schema, table, or column identifier."""
+    """Safely quote a SQL identifier."""
     return '"' + name.replace('"', '""') + '"'
 
-def table_name_from_path(path: Path) -> str:
-    """Create a stable table name from a CSV's relative path."""
-    relative = path.relative_to(DATA_DIR).with_suffix("")
-    name = "__".join(relative.parts).lower()
-    name = re.sub(r"[^a-z0-9_]+", "_", name)
-    name = re.sub(r"_+", "_", name).strip("_")
 
-    if not name:
-        raise ValueError(f"Could not derive a table name from {path}")
+def sql_string(value: str) -> str:
+    """Safely quote a SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
 
-    if name[0].isdigit():
-        name = f"table_{name}"
 
-    return name
+# ==================================================
+# Source File Validation
+# ==================================================
 
-def discover_csv_files() -> list[Path]:
-    """Discover CSV files recursively without following symlinks."""
+def discover_source_files() -> dict[str, Path]:
+    """Find and validate the expected source CSV files."""
+
     if not DATA_DIR.exists():
         raise FileNotFoundError(
-            f"Raw data directory does not exist: {DATA_DIR}"
+            f"Source directory not found: {DATA_DIR}"
         )
 
-    if not DATA_DIR.is_dir():
-        raise NotADirectoryError(
-            f"Expected a directory: {DATA_DIR}"
-        )
+    files = {
+        path.stem: path
+        for path in DATA_DIR.glob("*.csv")
+        if path.is_file()
+    }
 
-    files = sorted(
-        (
-            path
-            for path in DATA_DIR.rglob("*")
-            if path.is_file()
-            and not path.is_symlink()
-            and path.suffix.lower() == ".csv"
-        ),
-        key=lambda path: path.as_posix().lower(),
-    )
+    expected_names = set(EXPECTED_DATASETS)
+    actual_names = set(files)
 
-    if not files:
-        raise FileNotFoundError(
-            f"No CSV files found in {DATA_DIR}"
-        )
+    missing = expected_names - actual_names
+    unexpected = actual_names - expected_names
 
-    # Fail rather than silently overwrite tables with colliding names.
-    table_names = [table_name_from_path(path) for path in files]
-
-    if len(table_names) != len(set(table_names)):
+    if missing or unexpected:
         raise ValueError(
-            "Multiple CSV files map to the same DuckDB table name. "
-            "Review the source directory structure."
-        )
-
-    # Reject type configuration entries that cannot match a discovered file.
-    configured_tables = set(TYPE_OVERRIDES)
-    discovered_tables = set(table_names)
-    unknown_tables = configured_tables - discovered_tables
-
-    if unknown_tables:
-        raise ValueError(
-            f"TYPE_OVERRIDES contains unknown tables: "
-            f"{sorted(unknown_tables)}"
+            f"Source file mismatch. "
+            f"Missing: {sorted(missing)}. "
+            f"Unexpected: {sorted(unexpected)}."
         )
 
     return files
 
-# ==================================================
-# Source-file validation
-# ==================================================
 
-def validate_csv_source(path: Path) -> dict:
-    """
-    Validate CSV encoding, headers, row widths, and record count.
-    Uses streaming reads rather than loading the full file into memory.
-    """
-    row_count = 0
+def validate_source_header(
+    table_name: str,
+    path: Path,
+) -> list[str]:
+    """Check source CSV headers against Phase 2 findings."""
 
     with path.open(
         "r",
         encoding=CSV_ENCODING,
         newline="",
     ) as file:
-        reader = csv.reader(
-            file,
-            delimiter=CSV_DELIMITER,
-            strict=True,
-        )
+
+        reader = csv.reader(file, strict=True)
 
         try:
             headers = next(reader)
         except StopIteration:
-            raise ValueError("CSV file is empty.")
-
-        if not headers:
-            raise ValueError("CSV header is empty.")
-
-        headers = [header.strip() for header in headers]
-
-        if any(not header for header in headers):
-            raise ValueError("CSV contains a blank column name.")
-
-        if len(headers) != len(set(headers)):
             raise ValueError(
-                "CSV contains duplicate column names after trimming."
+                f"{table_name}: source CSV is empty."
             )
 
-        for row in reader:
-            # Match the common CSV convention that completely blank lines
-            # are not data records.
-            if not row:
-                continue
-
-            if len(row) != len(headers):
-                raise ValueError(
-                    f"CSV record ending at line {reader.line_num} "
-                    f"has {len(row)} fields; expected {len(headers)}."
-                )
-
-            row_count += 1
-
-    # Protect the source layer from accidentally converting a real source
-    # value into NULL through the configured null marker.
-    sentinel_bytes = NULL_SENTINEL.encode("utf-8")
-
-    with path.open("rb") as file:
-        overlap = b""
-        while True:
-            block = file.read(1024 * 1024)
-            if not block:
-                break
-
-            combined = overlap + block
-
-            if sentinel_bytes in combined:
-                raise ValueError(
-                    "The configured NULL sentinel already occurs in "
-                    "the source file. Change NULL_SENTINEL before loading."
-                )
-
-            overlap = combined[-len(sentinel_bytes):]
-
-    return {
-        "headers": headers,
-        "source_row_count": row_count,
-    }
-
-# ==================================================
-# Type configuration
-# ==================================================
-
-def normalize_type(type_name: str) -> str:
-    """Validate configured DuckDB types before using them in SQL."""
-    normalized = " ".join(type_name.strip().upper().split())
-
-    if normalized in ALLOWED_TYPES:
-        return normalized
-
-    if DECIMAL_PATTERN.fullmatch(normalized):
-        precision_scale = re.search(
-            r"\((\d{1,2}),\s*(\d{1,2})\)",
-            normalized,
-        )
-        precision = int(precision_scale.group(1))
-        scale = int(precision_scale.group(2))
-
-        if precision < 1 or precision > 38 or scale > precision:
-            raise ValueError(
-                f"Invalid DECIMAL precision/scale: {type_name}"
-            )
-
-        return f"DECIMAL({precision}, {scale})"
-
-    raise ValueError(
-        f"Unsupported or invalid configured DuckDB type: {type_name}"
-    )
-
-def validate_type_overrides(
-    table_name: str,
-    headers: list[str],
-) -> dict[str, str]:
-    """Validate type overrides against the actual CSV headers."""
-    overrides = TYPE_OVERRIDES.get(table_name, {})
-    unknown_columns = set(overrides) - set(headers)
-
-    if unknown_columns:
+    if not headers or any(not column.strip() for column in headers):
         raise ValueError(
-            f"{table_name}: type overrides refer to unknown columns: "
-            f"{sorted(unknown_columns)}"
+            f"{table_name}: blank or missing column name."
         )
 
-    return {
-        column: normalize_type(type_name)
-        for column, type_name in overrides.items()
-    }
+    if len(headers) != len(set(headers)):
+        raise ValueError(
+            f"{table_name}: duplicate column names."
+        )
+
+    expected_columns = EXPECTED_DATASETS[table_name]["columns"]
+
+    if headers != expected_columns:
+        raise ValueError(
+            f"{table_name}: source columns differ from "
+            f"the expected Phase 2 schema.\n"
+            f"Expected: {expected_columns}\n"
+            f"Actual: {headers}"
+        )
+
+    return headers
+
 
 # ==================================================
-# DuckDB loading
+# DuckDB Ingestion
 # ==================================================
 
-def sql_string(value: str) -> str:
-    """Escape a string for a SQL string literal."""
-    return "'" + value.replace("'", "''") + "'"
-
-def create_source_table(
+def load_csv_to_duckdb(
     connection: duckdb.DuckDBPyConnection,
-    path: Path,
     table_name: str,
+    path: Path,
 ) -> None:
-    """Load a CSV into the source schema without type inference."""
-    source_table = f"source.{quote_identifier(table_name)}"
+    """Load a source CSV directly into its raw table."""
+
+    table = f"raw.{quote_identifier(table_name)}"
     csv_path = sql_string(str(path.resolve()))
 
     connection.execute(
         f"""
-        CREATE OR REPLACE TABLE {source_table} AS
+        CREATE OR REPLACE TABLE {table} AS
+
         SELECT *
         FROM read_csv(
             {csv_path},
@@ -294,285 +251,225 @@ def create_source_table(
         """
     )
 
-def create_raw_table(
+
+# ==================================================
+# Ingestion Validation
+# ==================================================
+
+def validate_loaded_table(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,
-    headers: list[str],
-    overrides: dict[str, str],
-) -> None:
-    """
-    Create the typed ingestion table.
-
-    Unconfigured columns remain VARCHAR. Configured casts fail the
-    transaction if the source contains incompatible values.
-    """
-    source_table = f"source.{quote_identifier(table_name)}"
-    raw_table = f"raw.{quote_identifier(table_name)}"
-
-    select_expressions = []
-
-    for column in headers:
-        quoted_column = quote_identifier(column)
-
-        if column in overrides:
-            target_type = overrides[column]
-            expression = (
-                f"CAST({quoted_column} AS {target_type}) "
-                f"AS {quoted_column}"
-            )
-        else:
-            expression = quoted_column
-
-        select_expressions.append(expression)
-
-    connection.execute(
-        f"""
-        CREATE OR REPLACE TABLE {raw_table} AS
-        SELECT {", ".join(select_expressions)}
-        FROM {source_table}
-        """
-    )
-
-def get_table_metrics(
-    connection: duckdb.DuckDBPyConnection,
-    schema: str,
-    table_name: str,
+    expected_columns: list[str],
+    expected_rows: int,
 ) -> dict:
-    """Return row count, column count, and exact duplicate-row count."""
-    qualified_table = f"{quote_identifier(schema)}.{quote_identifier(table_name)}"
+    """Validate the loaded table against source expectations."""
+
+    table = f"raw.{quote_identifier(table_name)}"
 
     row_count = connection.execute(
-        f"SELECT COUNT(*) FROM {qualified_table}"
+        f"SELECT COUNT(*) FROM {table}"
     ).fetchone()[0]
 
-    columns = connection.execute(
+    column_info = connection.execute(
         """
-        SELECT column_name
+        SELECT column_name, data_type
         FROM information_schema.columns
-        WHERE table_schema = ?
+        WHERE table_schema = 'raw'
           AND table_name = ?
         ORDER BY ordinal_position
         """,
-        [schema, table_name],
+        [table_name],
     ).fetchall()
 
-    column_names = [row[0] for row in columns]
+    actual_columns = [row[0] for row in column_info]
 
-    if column_names:
-        distinct_tuple = ", ".join(
-            quote_identifier(column) for column in column_names
+    if row_count != expected_rows:
+        raise ValueError(
+            f"{table_name}: expected {expected_rows:,} rows, "
+            f"loaded {row_count:,}."
         )
 
-        duplicate_rows = connection.execute(
-            f"""
-            SELECT COUNT(*) - COUNT(DISTINCT ({distinct_tuple}))
-            FROM {qualified_table}
-            """
-        ).fetchone()[0]
-    else:
-        duplicate_rows = 0
+    if actual_columns != expected_columns:
+        raise ValueError(
+            f"{table_name}: loaded columns do not match "
+            "the expected source structure."
+        )
+
+    non_varchar = [
+        (name, data_type)
+        for name, data_type in column_info
+        if data_type != "VARCHAR"
+    ]
+
+    if non_varchar:
+        raise ValueError(
+            f"{table_name}: unexpected data types: {non_varchar}"
+        )
 
     return {
-        "row_count": int(row_count),
-        "column_count": len(column_names),
-        "duplicate_rows": int(duplicate_rows),
-        "columns": column_names,
+        "row_count": row_count,
+        "column_info": column_info,
     }
 
+
 # ==================================================
-# Reports
+# Reporting
 # ==================================================
 
 def save_reports(
     summary_rows: list[dict],
     column_rows: list[dict],
 ) -> None:
-    """Write ingestion results to CSV reports."""
+    """Save ingestion summary and column reports."""
+
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    summary_columns = [
-        "table_name",
-        "source_file",
-        "source_row_count",
-        "source_column_count",
-        "source_table_row_count",
-        "raw_table_row_count",
-        "source_duplicate_rows",
-        "raw_duplicate_rows",
-        "status",
-        "error",
-    ]
+    pd.DataFrame(summary_rows).to_csv(
+        SUMMARY_PATH,
+        index=False,
+    )
 
-    detail_columns = [
-        "table_name",
-        "column_name",
-        "source_position",
-        "source_type",
-        "raw_type",
-        "type_override_applied",
-    ]
+    pd.DataFrame(column_rows).to_csv(
+        COLUMN_REPORT_PATH,
+        index=False,
+    )
 
-    pd.DataFrame(
-        summary_rows,
-        columns=summary_columns,
-    ).to_csv(SUMMARY_PATH, index=False)
-
-    pd.DataFrame(
-        column_rows,
-        columns=detail_columns,
-    ).to_csv(COLUMN_REPORT_PATH, index=False)
 
 # ==================================================
-# Pipeline
+# Main Ingestion Pipeline
 # ==================================================
 
 def run_ingestion() -> None:
-    """
-    Validate all CSVs, load all tables in one transaction, and
-    save reports only after a successful database commit.
-    """
-    files = discover_csv_files()
+
     DATABASE_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Validate all files before changing the database.
-    plans = []
-
-    for path in files:
-        table_name = table_name_from_path(path)
-        source_info = validate_csv_source(path)
-        overrides = validate_type_overrides(
-            table_name,
-            source_info["headers"],
-        )
-
-        plans.append({
-            "path": path,
-            "table_name": table_name,
-            "headers": source_info["headers"],
-            "source_row_count": source_info["source_row_count"],
-            "overrides": overrides,
-        })
+    files = discover_source_files()
 
     summary_rows = []
     column_rows = []
 
-    with duckdb.connect(str(DATABASE_PATH)) as connection:
+    current_table = None
+
+    connection = duckdb.connect(str(DATABASE_PATH))
+
+    try:
         connection.execute("BEGIN TRANSACTION")
 
-        try:
-            connection.execute("CREATE SCHEMA IF NOT EXISTS source")
-            connection.execute("CREATE SCHEMA IF NOT EXISTS raw")
+        connection.execute(
+            "CREATE SCHEMA IF NOT EXISTS raw"
+        )
 
-            for plan in plans:
-                path = plan["path"]
-                table_name = plan["table_name"]
-                headers = plan["headers"]
-                overrides = plan["overrides"]
-                expected_rows = plan["source_row_count"]
+        for table_name, config in EXPECTED_DATASETS.items():
 
-                print(f"Ingesting {path.relative_to(PROJECT_ROOT)}")
+            current_table = table_name
+            path = files[table_name]
 
-                create_source_table(connection, path, table_name)
+            print(f"\nIngesting: {table_name}")
 
-                source_metrics = get_table_metrics(
-                    connection, "source", table_name
-                )
+            headers = validate_source_header(
+                table_name,
+                path,
+            )
 
-                if source_metrics["row_count"] != expected_rows:
-                    raise ValueError(
-                        f"{table_name}: CSV has {expected_rows:,} data "
-                        f"records but DuckDB loaded "
-                        f"{source_metrics['row_count']:,} rows."
-                    )
+            load_csv_to_duckdb(
+                connection,
+                table_name,
+                path,
+            )
 
-                if source_metrics["columns"] != headers:
-                    raise ValueError(
-                        f"{table_name}: loaded column names/order differ "
-                        "from the verified source header."
-                    )
+            result = validate_loaded_table(
+                connection,
+                table_name,
+                headers,
+                config["rows"],
+            )
 
-                create_raw_table(
-                    connection,
-                    table_name,
-                    headers,
-                    overrides,
-                )
+            summary_rows.append({
+                "table_name": table_name,
+                "source_file": path.name,
+                "expected_rows": config["rows"],
+                "loaded_rows": result["row_count"],
+                "column_count": len(headers),
+                "status": "success",
+                "error": "",
+            })
 
-                raw_metrics = get_table_metrics(
-                    connection, "raw", table_name
-                )
-
-                if raw_metrics["row_count"] != expected_rows:
-                    raise ValueError(
-                        f"{table_name}: raw table row count does not "
-                        "match the source CSV."
-                    )
-
-                if raw_metrics["columns"] != headers:
-                    raise ValueError(
-                        f"{table_name}: raw table columns/order changed."
-                    )
-
-                summary_rows.append({
+            for position, (column, data_type) in enumerate(
+                result["column_info"],
+                start=1,
+            ):
+                column_rows.append({
                     "table_name": table_name,
-                    "source_file": path.relative_to(
-                        PROJECT_ROOT
-                    ).as_posix(),
-                    "source_row_count": expected_rows,
-                    "source_column_count": len(headers),
-                    "source_table_row_count": source_metrics["row_count"],
-                    "raw_table_row_count": raw_metrics["row_count"],
-                    "source_duplicate_rows": source_metrics["duplicate_rows"],
-                    "raw_duplicate_rows": raw_metrics["duplicate_rows"],
-                    "status": "success",
-                    "error": "",
+                    "column_name": column,
+                    "column_position": position,
+                    "data_type": data_type,
                 })
 
-                for position, column in enumerate(headers, start=1):
-                    raw_type = connection.execute(
-                        """
-                        SELECT data_type
-                        FROM information_schema.columns
-                        WHERE table_schema = 'raw'
-                          AND table_name = ?
-                          AND column_name = ?
-                        """,
-                        [table_name, column],
-                    ).fetchone()[0]
+            print(
+                f"Successfully loaded "
+                f"{result['row_count']:,} rows."
+            )
 
-                    column_rows.append({
-                        "table_name": table_name,
-                        "column_name": column,
-                        "source_position": position,
-                        "source_type": "VARCHAR",
-                        "raw_type": raw_type,
-                        "type_override_applied": column in overrides,
-                    })
+        connection.execute("COMMIT")
 
-            connection.execute("COMMIT")
+    except Exception as error:
 
-        except Exception:
-            connection.execute("ROLLBACK")
-            raise
+        connection.execute("ROLLBACK")
 
-    # Reports are written after the database transaction commits.
+        for row in summary_rows:
+            row["status"] = "rolled_back"
+            row["error"] = (
+                f"Transaction rolled back because "
+                f"{current_table} failed."
+            )
+
+        summary_rows.append({
+            "table_name": current_table,
+            "source_file": (
+                files[current_table].name
+                if current_table in files
+                else ""
+            ),
+            "expected_rows": (
+                EXPECTED_DATASETS[current_table]["rows"]
+                if current_table in EXPECTED_DATASETS
+                else ""
+            ),
+            "loaded_rows": "",
+            "column_count": "",
+            "status": "failed",
+            "error": str(error),
+        })
+
+        save_reports(summary_rows, [])
+
+        raise
+
+    finally:
+        connection.close()
+
     save_reports(summary_rows, column_rows)
 
-    print("\nINGESTION COMPLETE")
+    total_rows = sum(
+        row["loaded_rows"]
+        for row in summary_rows
+    )
+
+    print("\n" + "=" * 60)
+    print("INGESTION COMPLETED SUCCESSFULLY")
     print("=" * 60)
-    print(f"CSV files ingested: {len(summary_rows)}")
-    print(f"DuckDB database: {DATABASE_PATH}")
+
+    print(f"Tables loaded: {len(summary_rows)}")
+    print(f"Total rows loaded: {total_rows:,}")
+    print(f"Database: {DATABASE_PATH}")
     print(f"Summary report: {SUMMARY_PATH}")
     print(f"Column report: {COLUMN_REPORT_PATH}")
 
-    total_rows = sum(
-        row["raw_table_row_count"] for row in summary_rows
-    )
-    print(f"Total rows loaded: {total_rows:,}")
 
 def main() -> None:
     run_ingestion()
+
 
 if __name__ == "__main__":
     main()
